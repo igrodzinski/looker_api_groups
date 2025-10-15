@@ -1,66 +1,109 @@
 import time
+import sys
 import looker_sdk
-from looker_sdk import models
-import sys # Dodajemy import sys, aby móc elegancko zakończyć program
+from looker_sdk.sdk.api40 import models
 
 # --- Konfiguracja ---
-REFRESH_INTERVAL_MINUTES = 15 # Co ile minut skrypt ma się uruchamiać
-GROUP_NAME_PREFIX = "4" # Prefix nazw grup do wyszukania
+REFRESH_INTERVAL_MINUTES = 15
+GROUP_NAME_PREFIX = "4"
 
-# Inicjalizacja Looker SDK
-# Upewnij się, że masz skonfigurowany plik looker.ini w tym samym katalogu
+# --- Inicjalizacja SDK ---
 try:
     sdk = looker_sdk.init40()
 except Exception as e:
     print(f"Błąd inicjalizacji Looker SDK. Sprawdź plik looker.ini: {e}")
-    sys.exit(1) # Zakończ, jeśli nie można połączyć się z API
+    sys.exit(1)
+
+def check_available_fields():
+    """
+    Funkcja diagnostyczna: Sprawdza i drukuje dostępne pola w widoku 'user'
+    w modelu 'system__activity', aby zweryfikować dostęp do 'user.license_type'.
+    """
+    print("--- Diagnostyka: Sprawdzanie dostępnych pól ---")
+    try:
+        explore = sdk.lookml_model_explore(
+            lookml_model_name="system__activity",
+            explore_name="user"
+        )
+        print("Udało się połączyć z modelem 'system__activity'.")
+        
+        # Tworzymy listę nazw pól z wymiarów i miar
+        dimensions = [field.name for field in explore.fields.dimensions]
+        measures = [field.name for field in explore.fields.measures]
+        all_fields = dimensions + measures
+        
+        # Sprawdzamy, czy kluczowe pole jest na liście
+        if "user.license_type" in all_fields:
+            print("✅ SUKCES: Pole 'user.license_type' jest dostępne dla Twojego użytkownika API.")
+        else:
+            print("⚠️ OSTRZEŻENIE: Pole 'user.license_type' NIE jest dostępne.")
+            print("   Najczęstsza przyczyna: Użytkownik API nie ma uprawnienia 'see_system_activity'.")
+            print("   Poproś administratora Lookera o nadanie tego uprawnienia.")
+
+        print("-------------------------------------------------")
+        
+    except Exception as e:
+        print(f"❌ BŁĄD: Nie można pobrać informacji o modelu 'system__activity'.")
+        print(f"   Upewnij się, że Twój użytkownik API ma rolę z uprawnieniem 'see_system_activity'.")
+        print(f"   Szczegóły błędu: {e}")
+        print("-------------------------------------------------")
+        # Jeśli nie możemy uzyskać dostępu do modelu, nie ma sensu kontynuować
+        sys.exit(1)
+
 
 def get_user_license_types():
     """
-    Pobiera typy licencji dla wszystkich użytkowników za pomocą System Activity Explore.
-    Zwraca słownik mapujący user_id na typ licencji ('Viewer' lub 'Standard').
+    Pobiera typy licencji dla wszystkich użytkowników.
     """
     try:
         query_body = models.WriteQuery(
             model="system__activity",
             view="user",
             fields=["user.id", "user.license_type"],
-            limit="5000" # Zwiększ w razie potrzeby
+            limit="5000"
         )
-        query_result = sdk.run_inline_query(
+        query_result_str = sdk.run_inline_query(
             result_format="json",
             body=query_body
         )
+        # SDK zwraca string JSON, trzeba go zdeserializować
+        import json
+        query_result = json.loads(query_result_str)
         
         user_licenses = {}
-        # Sprawdzamy, czy query_result nie jest pusty i jest listą
-        if query_result and isinstance(query_result, list):
-            for row in query_result:
-                user_id = str(row.get("user.id"))
-                license_type = row.get("user.license_type")
-                user_licenses[user_id] = "Viewer" if license_type == "viewer" else "Standard"
+        
+        if not query_result or not isinstance(query_result, list):
+            return {}
+            
+        # Sprawdzamy pierwszy wiersz, czy zawiera potrzebne pole
+        if query_result and "user.license_type" not in query_result[0]:
+            print("⚠️ OSTRZEŻENIE: Odpowiedź z API nie zawiera pola 'user.license_type'. Sprawdź uprawnienia.")
+            return None # Zwracamy None, aby zasygnalizować problem
+
+        for row in query_result:
+            user_id = str(row.get("user.id"))
+            license_type = row.get("user.license_type", "Standard") # Domyślnie 'Standard', jeśli brak
+            user_licenses[user_id] = "Viewer" if license_type == "viewer" else "Standard"
+            
         return user_licenses
 
     except Exception as e:
         print(f"Błąd podczas pobierania typów licencji użytkowników: {e}")
-        return {}
+        return None
 
 def analyze_groups():
     """
     Analizuje grupy, zlicza użytkowników i wyświetla wyniki.
     """
-    print("Rozpoczynam analizę grup...")
+    print("\nRozpoczynam analizę grup...")
     
     user_licenses = get_user_license_types()
-    if not user_licenses:
-        print("Nie udało się pobrać informacji o licencjach. Prerywam analizę.")
+    if user_licenses is None: # Sprawdzamy, czy wystąpił błąd w poprzedniej funkcji
+        print("Nie udało się pobrać informacji o licencjach z powodu braku danych lub błędu. Prerywam ten cykl.")
         return
 
     try:
-        # Pobierz wszystkie grupy
-        all_groups = sdk.all_groups()
-
-        # Filtruj grupy po prefiksie nazwy
+        all_groups = sdk.all_groups(fields="id,name")
         filtered_groups = [group for group in all_groups if group.name.startswith(GROUP_NAME_PREFIX)]
 
         if not filtered_groups:
@@ -72,14 +115,13 @@ def analyze_groups():
             viewer_count = 0
             standard_count = 0
             
-            # Pobierz użytkowników dla danej grupy
             group_users = sdk.all_group_users(group_id=group.id)
 
             for user in group_users:
-                license_type = user_licenses.get(str(user.id))
+                license_type = user_licenses.get(str(user.id), "Standard") # Bezpieczniejsze pobieranie
                 if license_type == "Viewer":
                     viewer_count += 1
-                elif license_type == "Standard":
+                else: # Wszyscy inni (w tym ci bez licencji w mapie) będą Standard
                     standard_count += 1
             
             total_users = viewer_count + standard_count
@@ -94,6 +136,9 @@ def analyze_groups():
         print(f"Wystąpił błąd podczas analizy grup: {e}")
 
 if __name__ == "__main__":
+    # Uruchom diagnostykę tylko raz na początku
+    check_available_fields()
+    
     try:
         while True:
             analyze_groups()
