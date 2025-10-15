@@ -1,13 +1,19 @@
 import time
 import looker_sdk
 from looker_sdk import models
+import sys # Dodajemy import sys, aby móc elegancko zakończyć program
 
 # --- Konfiguracja ---
 REFRESH_INTERVAL_MINUTES = 15 # Co ile minut skrypt ma się uruchamiać
 GROUP_NAME_PREFIX = "4" # Prefix nazw grup do wyszukania
 
 # Inicjalizacja Looker SDK
-sdk = looker_sdk.init40()
+# Upewnij się, że masz skonfigurowany plik looker.ini w tym samym katalogu
+try:
+    sdk = looker_sdk.init40()
+except Exception as e:
+    print(f"Błąd inicjalizacji Looker SDK. Sprawdź plik looker.ini: {e}")
+    sys.exit(1) # Zakończ, jeśli nie można połączyć się z API
 
 def get_user_license_types():
     """
@@ -78,7 +84,7 @@ def analyze_groups():
             
             total_users = viewer_count + standard_count
 
-            print(f"\nGrupa: {group.name}")
+            print(f"\nGrupa: {group.name} (ID: {group.id})")
             print(f"  Liczba użytkowników 'Standard': {standard_count}")
             print(f"  Liczba użytkowników 'Viewer': {viewer_count}")
             print(f"  Suma użytkowników: {total_users}")
@@ -88,7 +94,12 @@ def analyze_groups():
         print(f"Wystąpił błąd podczas analizy grup: {e}")
 
 if __name__ == "__main__":
-    while True:
-        analyze_groups()
-        print(f"\nSkrypt zostanie ponownie uruchomiony za {REFRESH_INTERVAL_MINUTES} minut.")
-        time.sleep(REFRESH_INTERVAL_MINUTES * 60)
+    try:
+        while True:
+            analyze_groups()
+            print(f"\nSkrypt zostanie ponownie uruchomiony za {REFRESH_INTERVAL_MINUTES} minut.")
+            print("Naciśnij Ctrl+C, aby zakończyć.")
+            time.sleep(REFRESH_INTERVAL_MINUTES * 60)
+    except KeyboardInterrupt:
+        print("\n\nPrzerwanie przez użytkownika. Zamykanie skryptu... 👋")
+        sys.exit(0)
